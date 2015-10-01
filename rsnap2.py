@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 rsync nas backups
 """
@@ -10,6 +10,10 @@ import os
 import re
 import shlex
 import subprocess
+import sys
+
+
+PYTHON_COMPAT_MODE = sys.version_info.major <= 3
 
 
 class RsyncBackuper:
@@ -31,7 +35,10 @@ class RsyncBackuper:
         if previous_backup is not None:
             rsync_call += ["--link-dest", previous_backup.path]
 
-        print("issuing:", " ".join([shlex.quote(x) for x in rsync_call]))
+        if PYTHON_COMPAT_MODE:
+            print("issuing: ", rsync_call)
+        else:
+            print("issuing:", " ".join([shlex.quote(x) for x in rsync_call]))
         print("---")
         rsync_ret = subprocess.call(rsync_call)
         if rsync_ret != 0:

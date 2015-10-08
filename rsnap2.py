@@ -23,14 +23,14 @@ class RsyncBackuper:
         self.rsync_args = rsync_args
         self.dests = self._list_previous_dests()
 
-    def backup(self, src):
+    def backup(self, sources):
 
         dest = RsyncBackuperDest.new(self.root)
         previous_backup = None
         if len(self.dests) > 0:
             previous_backup = next((x for x in self.dests if x.is_complete), None)
 
-        rsync_call = ["rsync", src, dest.path]
+        rsync_call = ["rsync"] + sources + [dest.path]
         rsync_call += self.rsync_args
         if previous_backup is not None:
             rsync_call += ["--link-dest", previous_backup.path]
@@ -127,7 +127,7 @@ def BackupAction(args):
         raise ValueError("--link-dest cannot be overwritten in --rsync-args")
 
     backuper = RsyncBackuper.create(args)
-    backuper.backup(args.source)
+    backuper.backup(args.sources)
     exit(0)
 
 def InfoAction(args):
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     actions_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
 
     action_backup = actions_parsers.add_parser("backup", parents=[actions_parent])
-    action_backup.add_argument("source")
+    action_backup.add_argument("sources", nargs="+")
     action_backup.add_argument("root")
     action_backup.set_defaults(handler=BackupAction)
 

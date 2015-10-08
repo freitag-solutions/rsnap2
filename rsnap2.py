@@ -43,6 +43,8 @@ class RsyncBackuper:
         rsync_ret = subprocess.call(rsync_call)
         if rsync_ret != 0:
             raise Exception("rsync failed!")
+        if not(os.path.exists(dest.path) and os.path.isdir(dest.path)):
+            raise Exception("rsync doesn't seem to have backed up your data, please check command line arguments!")
 
         dest.complete()
 
@@ -59,6 +61,14 @@ class RsyncBackuper:
         previous_dests.sort(key=operator.attrgetter("time"), reverse=True)
 
         return previous_dests
+
+    @classmethod
+    def create(cls, args):
+        root = os.path.abspath(args.root)
+        if not os.path.exists(root) or not os.path.isdir(root):
+            raise ValueError("no such dir: {0}".format(args.root))
+
+        return cls(root, args.rsync_args)
 
 
 class RsyncBackuperDest:
@@ -112,21 +122,37 @@ class RsyncBackuperDest:
             dotflag="" if flag is None else ".{}".format(flag)
         )
 
-
-
-if __name__ == "__main__":
-    args_parser = argparse.ArgumentParser(description="rsync nas backups")
-    args_parser.add_argument("source")
-    args_parser.add_argument("root")
-    args_parser.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
-    args = args_parser.parse_args()
-
+def BackupAction(args):
     if True in (arg.startswith("--link-dest") for arg in args.rsync_args):
         raise ValueError("--link-dest cannot be overwritten in --rsync-args")
 
-    root = os.path.abspath(args.root)
-    if not os.path.exists(root) or not os.path.isdir(root):
-        raise ValueError("no such dir: {0}".format(args.root))
-
-    backuper = RsyncBackuper(root, args.rsync_args)
+    backuper = RsyncBackuper.create(args)
     backuper.backup(args.source)
+    exit(0)
+
+def InfoAction(args):
+    backuper = RsyncBackuper.create(args)
+
+    dests = [dest.dirname for dest in backuper.dests]
+    print("{}".format("\n".join(dests)))
+    exit(0)
+
+
+if __name__ == "__main__":
+    args_parser = argparse.ArgumentParser(description="rsync snapshot backups")
+
+    actions_parsers = args_parser.add_subparsers()
+    actions_parent = argparse.ArgumentParser(add_help=False)
+    actions_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
+
+    action_backup = actions_parsers.add_parser("backup", parents=[actions_parent])
+    action_backup.add_argument("source")
+    action_backup.add_argument("root")
+    action_backup.set_defaults(handler=BackupAction)
+
+    action_info = actions_parsers.add_parser("info", parents=[actions_parent])
+    action_info.add_argument("root")
+    action_info.set_defaults(handler=InfoAction)
+
+    args = args_parser.parse_args()
+    args.handler(args)

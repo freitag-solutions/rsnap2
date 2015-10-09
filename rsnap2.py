@@ -16,12 +16,84 @@ import sys
 PYTHON_COMPAT_MODE = sys.version_info.major <= 3
 
 
-class RsyncBackuper:
+class RsyncBackuper(object):
+    def __init__(self, rsync_args):
+        self.rsync_args = rsync_args
+        self.dests = self._list_previous_dests()
+
+    def backup(self, sources):
+        raise NotImplementedError()
+
+    def complete_dest(self, dest):
+        raise NotImplementedError()
+
+    def _list_previous_dests(self):
+        raise NotImplementedError()
+
+    @classmethod
+    def create(cls, args):
+        if ":" in args.root:
+            # username@remote_host:path
+            tmp = args.root.split(":")
+            if len(tmp) != 2:
+                raise Exception("illegal use of : in the root path: %s" % args.root)
+
+            remote_string = tmp[0]
+            root = tmp[1]
+
+            tmp = remote_string.split("@")
+            if len(tmp) == 1:
+                user = None
+                host = tmp[0]
+            elif len(tmp) == 2:
+                user = tmp[0]
+                host = tmp[1]
+            else:
+                raise Exception("illegal use of @ in the root path: %s" % args.root)
+
+            return RsyncBackuper_Remote(root, host, user, args.rsh, args.rsync_args)
+        else:
+            root = os.path.abspath(args.root)
+            if not os.path.exists(root) or not os.path.isdir(root):
+                raise ValueError("no such dir: {0}".format(args.root))
+
+            return RsyncBackuper_Local(root, args.rsync_args)
+
+
+class RsyncBackuper_Remote(RsyncBackuper):
+    def __init__(self, root, host, user, rsh, rsync_args):
+        self.root = root
+        self.host = host
+        self.user = user
+
+        rsh = shlex.split(rsh)
+        if self.user is not None:
+            rsh += ["%s@%s" % (self.user, self.host)]
+        else:
+            rsh += self.host
+        self.rsh = rsh
+
+        super(RsyncBackuper_Remote, self).__init__(rsync_args)
+
+    def _list_previous_dests(self):
+        cmd_info = self.rsh + ["./rsnap2.py info {}".format(self.root)]
+        info_str = subprocess.check_output(cmd_info)
+        info_lines = info_str.splitlines()
+
+        previous_dests = []
+        for info_line in info_lines:
+            previous_dests.append(RsyncBackuperDest.parse(info_line, self.root))
+
+        previous_dests.sort(key=operator.attrgetter("time"), reverse=True)
+
+        return previous_dests
+
+
+class RsyncBackuper_Local(RsyncBackuper):
     def __init__(self, root, rsync_args):
         assert os.path.isabs(root)
         self.root = root
-        self.rsync_args = rsync_args
-        self.dests = self._list_previous_dests()
+        super(RsyncBackuper_Local, self).__init__(rsync_args)
 
     def backup(self, sources):
 
@@ -40,13 +112,26 @@ class RsyncBackuper:
         else:
             print("issuing:", " ".join([shlex.quote(x) for x in rsync_call]))
         print("---")
-        rsync_ret = subprocess.call(rsync_call)
-        if rsync_ret != 0:
-            raise Exception("rsync failed!")
+        try:
+            subprocess.check_call(rsync_call)
+        except subprocess.CalledProcessError, e:
+            raise e
+
         if not(os.path.exists(dest.path) and os.path.isdir(dest.path)):
             raise Exception("rsync doesn't seem to have backed up your data, please check command line arguments!")
 
-        dest.complete()
+        self.complete_dest(dest)
+
+    def complete_dest(self, dest):
+        assert dest.root == self.root
+
+        path_old = dest.path
+
+        dest.is_complete = True
+        dest.dirname = dest._get_dirname(dest.time)
+        path_new = dest.path
+
+        os.rename(path_old, path_new)
 
     def _list_previous_dests(self):
         previous_dests = []
@@ -61,14 +146,6 @@ class RsyncBackuper:
         previous_dests.sort(key=operator.attrgetter("time"), reverse=True)
 
         return previous_dests
-
-    @classmethod
-    def create(cls, args):
-        root = os.path.abspath(args.root)
-        if not os.path.exists(root) or not os.path.isdir(root):
-            raise ValueError("no such dir: {0}".format(args.root))
-
-        return cls(root, args.rsync_args)
 
 
 class RsyncBackuperDest:
@@ -85,15 +162,6 @@ class RsyncBackuperDest:
     @property
     def path(self):
         return os.path.join(self.root, self.dirname)
-
-    def complete(self):
-        path_old = self.path
-
-        self.is_complete = True
-        self.dirname = self._get_dirname(self.time)
-        path_new = self.path
-
-        os.rename(path_old, path_new)
 
     @classmethod
     def parse(cls, dirname, root):
@@ -128,14 +196,14 @@ def BackupAction(args):
 
     backuper = RsyncBackuper.create(args)
     backuper.backup(args.sources)
-    exit(0)
+    return 0
 
 def InfoAction(args):
     backuper = RsyncBackuper.create(args)
 
     dests = [dest.dirname for dest in backuper.dests]
     print("{}".format("\n".join(dests)))
-    exit(0)
+    return 0
 
 
 if __name__ == "__main__":
@@ -143,6 +211,7 @@ if __name__ == "__main__":
 
     actions_parsers = args_parser.add_subparsers()
     actions_parent = argparse.ArgumentParser(add_help=False)
+    actions_parent.add_argument("--rsh")
     actions_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
 
     action_backup = actions_parsers.add_parser("backup", parents=[actions_parent])
@@ -155,4 +224,4 @@ if __name__ == "__main__":
     action_info.set_defaults(handler=InfoAction)
 
     args = args_parser.parse_args()
-    args.handler(args)
+    exit(args.handler(args))

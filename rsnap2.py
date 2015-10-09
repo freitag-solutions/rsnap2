@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-rsync nas backups
+rsync snapshot backups
 """
 
 import argparse

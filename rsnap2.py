@@ -10,10 +10,6 @@ import os
 import re
 import shlex
 import subprocess
-import sys
-
-
-PYTHON_COMPAT_MODE = sys.version_info.major <= 3
 
 
 class RsyncBackuper(object):
@@ -107,10 +103,7 @@ class RsyncBackuper_Local(RsyncBackuper):
         if previous_backup is not None:
             rsync_call += ["--link-dest", previous_backup.path]
 
-        if PYTHON_COMPAT_MODE:
-            print("issuing: ", rsync_call)
-        else:
-            print("issuing:", " ".join([shlex.quote(x) for x in rsync_call]))
+        print("issuing: ", rsync_call)
         print("---")
         try:
             subprocess.check_call(rsync_call)

@@ -14,7 +14,8 @@ import sys
 
 
 class RsyncBackuper(object):
-    def __init__(self, rsync_args):
+    def __init__(self, root, rsync_args):
+        self.root = root
         self.rsync_args = rsync_args
 
         dests = self._list_previous_dests()
@@ -23,12 +24,26 @@ class RsyncBackuper(object):
         self.dests = dests
 
     def backup(self, sources):
-        raise NotImplementedError()
+        dest = RsyncBackuperDest.new(self.root)
+        previous_backup = None
+        if len(self.dests) > 0:
+            previous_backup = next((x for x in self.dests if x.is_complete), None)
 
-    def complete_dest(self, dest):
+        rsync_params = sources + [dest.path]
+        rsync_params += self.rsync_args
+        if previous_backup is not None:
+            rsync_params += ["--link-dest", previous_backup.path]
+        self._issue_rsync(rsync_params)
+
+        self._complete_dest(dest)
+
+    def _issue_rsync(self, params):
         raise NotImplementedError()
 
     def _list_previous_dests(self):
+        raise NotImplementedError()
+
+    def _complete_dest(self, dest):
         raise NotImplementedError()
 
     @classmethod
@@ -55,7 +70,7 @@ class RsyncBackuper(object):
             if rsh is None:
                 raise Exception("--rsh must be given when targeting a remote repository")
 
-            return RsyncBackuper_Remote(remote_root, host, user, rsh, rsh_rsnap2, rsync_args)
+            return RsyncBackuper_Remote(root, remote_root, host, user, rsh, rsh_rsnap2, rsync_args)
         else:
             root = os.path.abspath(root)
             if not os.path.exists(root) or not os.path.isdir(root):
@@ -109,21 +124,10 @@ class RsyncBackuperDest:
 
 class RsyncBackuper_Local(RsyncBackuper):
     def __init__(self, root, rsync_args):
-        assert os.path.isabs(root)
-        self.root = root
-        super(RsyncBackuper_Local, self).__init__(rsync_args)
+        super(RsyncBackuper_Local, self).__init__(root, rsync_args)
 
-    def backup(self, sources):
-
-        dest = RsyncBackuperDest.new(self.root)
-        previous_backup = None
-        if len(self.dests) > 0:
-            previous_backup = next((x for x in self.dests if x.is_complete), None)
-
-        rsync_call = ["rsync"] + sources + [dest.path]
-        rsync_call += self.rsync_args
-        if previous_backup is not None:
-            rsync_call += ["--link-dest", previous_backup.path]
+    def _issue_rsync(self, params):
+        rsync_call = ["rsync"] + params
 
         print "issuing: ", rsync_call
         print "---"
@@ -131,22 +135,6 @@ class RsyncBackuper_Local(RsyncBackuper):
             subprocess.check_call(rsync_call)
         except subprocess.CalledProcessError, e:
             raise e
-
-        if not(os.path.exists(dest.path) and os.path.isdir(dest.path)):
-            raise Exception("rsync doesn't seem to have backed up your data, please check command line arguments!")
-
-        self.complete_dest(dest)
-
-    def complete_dest(self, dest):
-        assert dest.root == self.root
-
-        path_old = dest.path
-
-        dest.is_complete = True
-        dest.dirname = dest._get_dirname(dest.time)
-        path_new = dest.path
-
-        os.rename(path_old, path_new)
 
     def _list_previous_dests(self):
         previous_dests = []
@@ -160,14 +148,29 @@ class RsyncBackuper_Local(RsyncBackuper):
 
         return previous_dests
 
+    def _complete_dest(self, dest):
+        assert dest.root == self.root
+
+        if not(os.path.exists(dest.path) and os.path.isdir(dest.path)):
+            raise Exception("destination doesn't exist! maybe check your rsync arguments?")
+
+        path_old = dest.path
+
+        dest.is_complete = True
+        dest.dirname = dest._get_dirname(dest.time)
+        path_new = dest.path
+
+        os.rename(path_old, path_new)
+
 
 class RsyncBackuper_Remote(RsyncBackuper):
-    def __init__(self, root, host, user, rsh, rsh_rsnap2, rsync_args):
-        self.root = root
+    def __init__(self, root, remote_root, host, user, rsh, rsh_rsnap2, rsync_args):
+        self.remote_root = remote_root
         self.host = host
         self.user = user
         self.rsnap2 = "rsnap2" if rsh_rsnap2 is None else rsh_rsnap2
 
+        self.rsh_orig = rsh
         rsh = shlex.split(rsh)
         if self.user is not None:
             rsh += ["%s@%s" % (self.user, self.host)]
@@ -175,16 +178,31 @@ class RsyncBackuper_Remote(RsyncBackuper):
             rsh += self.host
         self.rsh = rsh
 
-        super(RsyncBackuper_Remote, self).__init__(rsync_args)
+        super(RsyncBackuper_Remote, self).__init__(root, rsync_args)
+
+    def _issue_rsync(self, params):
+        rsync_call = ["rsync"] + ["--rsh", self.rsh_orig] + params
+
+        print "issuing: ", rsync_call
+        print "---"
+        try:
+            subprocess.check_call(rsync_call)
+        except subprocess.CalledProcessError, e:
+            raise e
 
     def _list_previous_dests(self):
-        info_str = self._run_remotely("{} info {}".format(self.rsnap2, self.root))
+        info_str = self._run_remotely("{} info {}".format(self.rsnap2, self.remote_root))
 
         previous_dests = []
         for info_line in info_str.splitlines():
-            previous_dests.append(RsyncBackuperDest.parse(info_line, self.root))
+            previous_dests.append(RsyncBackuperDest.parse(info_line, self.remote_root))
 
         return previous_dests
+
+    def _complete_dest(self, dest):
+        assert dest.root == self.root
+
+        self._run_remotely("{} __service {} mark-completed {}".format(self.rsnap2, self.remote_root, dest.dirname))
 
     def _run_remotely(self, cmd):
         cmd_call = self.rsh + [cmd]
@@ -214,29 +232,48 @@ if __name__ == "__main__":
         backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_rsnap2)
 
         dests = [dest.dirname for dest in backuper.dests]
-        print "{}".format(os.linesep.join(dests))
+        if len(dests) > 0:
+            print "{}".format(os.linesep.join(dests))
         return 0
+
+    def ServiceAction_MarkCompleted(args):
+        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_rsnap2)
+
+        dest = RsyncBackuperDest.parse(args.dest, backuper.root)
+        if dest is None:
+            return 1
+        backuper._complete_dest(dest)
 
 
     #
     # command line parser definitions
     #
     args_parser = argparse.ArgumentParser(description="rsync snapshot backups")
-
     actions_parsers = args_parser.add_subparsers()
-    actions_parent = argparse.ArgumentParser(add_help=False)
-    actions_parent.add_argument("--rsh")
-    actions_parent.add_argument("--rsh-rsnap2")
-    actions_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
 
-    action_backup = actions_parsers.add_parser("backup", parents=[actions_parent])
+    # user actions
+    actions_useraction_parent = argparse.ArgumentParser(add_help=False)
+    actions_useraction_parent.add_argument("--rsh")
+    actions_useraction_parent.add_argument("--rsh-rsnap2")
+    actions_useraction_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
+
+    action_backup = actions_parsers.add_parser("backup", parents=[actions_useraction_parent])
     action_backup.add_argument("sources", nargs="+")
     action_backup.add_argument("root")
     action_backup.set_defaults(handler=BackupAction)
 
-    action_info = actions_parsers.add_parser("info", parents=[actions_parent])
+    action_info = actions_parsers.add_parser("info", parents=[actions_useraction_parent])
     action_info.add_argument("root")
     action_info.set_defaults(handler=InfoAction)
+
+    # internal actions
+    action_service = actions_parsers.add_parser("__service")
+    action_service.add_argument("root")
+    action_service_subparsers = action_service.add_subparsers()
+    action_service_markcompleted = action_service_subparsers.add_parser("mark-completed", parents=[actions_useraction_parent])
+    action_service_markcompleted.add_argument("dest")
+    action_service_markcompleted.set_defaults(handler=ServiceAction_MarkCompleted)
+
 
 
     #

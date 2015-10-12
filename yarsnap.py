@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-rsync snapshot backups
+Yet Another Rsync SNAPshot utility.
 """
 
 import argparse
@@ -49,7 +49,7 @@ class RsyncBackuper(object):
         raise NotImplementedError()
 
     @classmethod
-    def create(cls, root, rsync_args, rsh, rsh_rsnap2):
+    def create(cls, root, rsync_args, rsh, rsh_yarsnap):
         if ":" in root:
             # username@remote_host:path
             tmp = root.split(":")
@@ -70,7 +70,7 @@ class RsyncBackuper(object):
             if rsh is None:
                 raise Exception("--rsh must be given when targeting a remote repository")
 
-            return RsyncBackuper_Remote(remote_root, host, rsh, rsh_rsnap2, rsync_args)
+            return RsyncBackuper_Remote(remote_root, host, rsh, rsh_yarsnap, rsync_args)
         else:
             root = os.path.abspath(root)
             if not os.path.exists(root) or not os.path.isdir(root):
@@ -176,8 +176,8 @@ class RsyncBackuper_Local(RsyncBackuper):
 
 
 class RsyncBackuper_Remote(RsyncBackuper):
-    def __init__(self, root, host, rsh, rsh_rsnap2, rsync_args):
-        self.rsnap2 = "rsnap2" if rsh_rsnap2 is None else rsh_rsnap2
+    def __init__(self, root, host, rsh, rsh_yarsnap, rsync_args):
+        self.yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
 
         self.rsh_orig = rsh
         rsh = shlex.split(rsh)
@@ -200,7 +200,7 @@ class RsyncBackuper_Remote(RsyncBackuper):
             raise e
 
     def _list_previous_dests(self):
-        info_str = self._run_remotely([self.rsnap2, "info", self.root])
+        info_str = self._run_remotely([self.yarsnap, "info", self.root])
 
         previous_dests = []
         for info_line in info_str.splitlines():
@@ -211,7 +211,7 @@ class RsyncBackuper_Remote(RsyncBackuper):
     def _complete_dest(self, dest):
         assert dest.root == self.root and dest.host == self.host
 
-        self._run_remotely([self.rsnap2, "__service", self.root, "mark-completed", dest.dirname])
+        self._run_remotely([self.yarsnap, "__service", self.root, "mark-completed", dest.dirname])
 
     def _run_remotely(self, cmd):
         from pipes import quote as shell_quote
@@ -234,12 +234,12 @@ if __name__ == "__main__":
         if True in (arg.startswith("--link-dest") for arg in args.rsync_args):
             raise ValueError("--link-dest cannot be overwritten in --rsync-args")
 
-        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_rsnap2)
+        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
-        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_rsnap2)
+        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
 
         dests = [dest.dirname for dest in backuper.dests]
         if len(dests) > 0:
@@ -264,7 +264,7 @@ if __name__ == "__main__":
     # user actions
     actions_useraction_parent = argparse.ArgumentParser(add_help=False)
     actions_useraction_parent.add_argument("--rsh")
-    actions_useraction_parent.add_argument("--rsh-rsnap2")
+    actions_useraction_parent.add_argument("--rsh-yarsnap")
     actions_useraction_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
 
     action_backup = actions_parsers.add_parser("backup", parents=[actions_useraction_parent])

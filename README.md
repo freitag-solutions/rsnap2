@@ -1,1 +1,1 @@
-# rsnap2
+# Yet Another Rsync SNAPshot utility

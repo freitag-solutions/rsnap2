@@ -91,8 +91,6 @@ class RsyncBackuperDest:
         self.time = time
         self.is_complete = is_complete
 
-    #def hostPath(self):
-
     @property
     def path(self):
         return os.path.join(self.root, self.dirname)
@@ -202,7 +200,7 @@ class RsyncBackuper_Remote(RsyncBackuper):
             raise e
 
     def _list_previous_dests(self):
-        info_str = self._run_remotely("{} info {}".format(self.rsnap2, self.root))
+        info_str = self._run_remotely([self.rsnap2, "info", self.root])
 
         previous_dests = []
         for info_line in info_str.splitlines():
@@ -213,11 +211,11 @@ class RsyncBackuper_Remote(RsyncBackuper):
     def _complete_dest(self, dest):
         assert dest.root == self.root and dest.host == self.host
 
-        self._run_remotely("{} __service {} mark-completed {}".format(self.rsnap2, self.root, dest.dirname))
+        self._run_remotely([self.rsnap2, "__service", self.root, "mark-completed", dest.dirname])
 
     def _run_remotely(self, cmd):
-        # TODO: unsafe?
-        cmd_call = self.rsh + [cmd]
+        from pipes import quote as shell_quote
+        cmd_call = self.rsh + [" ".join([shell_quote(c) for c in cmd])]
 
         print "ISSUING REMOTE: ", cmd_call
         print "---"

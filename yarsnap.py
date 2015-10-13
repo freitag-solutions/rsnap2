@@ -30,16 +30,14 @@ from pipes import quote as shell_quote
 
 
 class YarsnapBackuper(object):
-    def __init__(self, root, host, rsh, rsh_yarsnap, rsync_args):
+    def __init__(self, repository, rsh, rsync_args):
+        self.repository = repository
         self.rsh = rsh
         self.rsync_args = rsync_args
-        self.repository = SnapshotRepository.create(root, host, rsh, rsh_yarsnap)
 
         dests = self.repository.list_snapshots()
         dests.sort(key=operator.attrgetter("time"), reverse=True)
-
         self.dests = dests
-        self.rsync_args = rsync_args
 
     def backup(self, sources):
         dest = Snapshot.new(self.repository)
@@ -69,33 +67,6 @@ class YarsnapBackuper(object):
         except subprocess.CalledProcessError, e:
             raise e
 
-    @classmethod
-    def from_args(cls, root, rsh, rsh_yarsnap, rsync_args):
-        host = None
-        if ":" in root:
-            # username@remote_host:path
-            tmp = root.split(":")
-            if len(tmp) != 2:
-                raise Exception("illegal use of : in the root path: %s" % root)
-
-            remote_host_string = tmp[0]
-            root = tmp[1]
-
-            tmp = remote_host_string.split("@")
-            if len(tmp) == 1:
-                host = tmp[0], None
-            elif len(tmp) == 2:
-                host = tmp[1], tmp[0]
-            else:
-                raise Exception("illegal use of @ in the root path: %s" % root)
-
-            if rsh is None:
-                raise Exception("--rsh must be given when targeting a remote repository")
-        else:
-            root = os.path.abspath(root)
-
-        return cls(root=root, host=host, rsh=rsh, rsh_yarsnap=rsh_yarsnap, rsync_args=rsync_args)
-
 
 class SnapshotRepository(object):
     def __init__(self, root, host, rsh, rsh_yarsnap):
@@ -121,6 +92,7 @@ class SnapshotRepository(object):
 class LocalSnapshotRepository(SnapshotRepository):
     def __init__(self, root, host, rsh, rsh_yarsnap):
         assert os.path.isabs(root)
+        assert os.path.isdir(root)
         super(LocalSnapshotRepository, self).__init__(root, host, rsh, rsh_yarsnap)
 
     def list_snapshots(self):
@@ -248,12 +220,15 @@ if __name__ == "__main__":
     # action definitions
     #
     def BackupAction(args):
-        backuper = YarsnapBackuper.from_args(root=args.root, rsh=args.rsh, rsh_yarsnap=args.rsh_yarsnap, rsync_args=args.rsync_args)
+        repository = repository_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap)
+        backuper = YarsnapBackuper(repository, args.rsh, args.rsync_args)
+
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
-        backuper = YarsnapBackuper.from_args(root=args.root, rsh=args.rsh, rsh_yarsnap=args.rsh_yarsnap, rsync_args=args.rsync_args)
+        repository = repository_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap)
+        backuper = YarsnapBackuper(repository, args.rsh, args.rsync_args)
 
         dests = [dest.dirname for dest in backuper.dests]
         if len(dests) > 0:
@@ -261,12 +236,14 @@ if __name__ == "__main__":
         return 0
 
     def ServiceAction_MarkCompleted(args):
-        backuper = YarsnapBackuper.from_args(root=args.root, rsh=None, rsh_yarsnap=None, rsync_args=None)
+        repository = repository_from_args_for_service(arg_root=args.root)
+        assert repository.host is None
 
-        dest = Snapshot.existing(args.dest, backuper.repository)
+        dest = Snapshot.existing(args.dest, repository)
         if dest is None:
             return 1
-        backuper.repository.complete_dest(dest)
+        repository.complete_dest(dest)
+        return 0
 
 
     #
@@ -298,6 +275,40 @@ if __name__ == "__main__":
     action_service_markcompleted.add_argument("dest")
     action_service_markcompleted.set_defaults(handler=ServiceAction_MarkCompleted)
 
+
+    #
+    # helpers
+    #
+    def repository_from_args(arg_root, arg_rsh=None, arg_rsh_yarsnap=None):
+        host = None
+        if ":" in arg_root:
+            # username@remote_host:path
+            tmp = arg_root.split(":")
+            if len(tmp) != 2:
+                raise Exception("illegal use of : in the root path: %s" % arg_root)
+
+            remote_host_string = tmp[0]
+            root = tmp[1]
+
+            tmp = remote_host_string.split("@")
+            if len(tmp) == 1:
+                host = tmp[0], None
+            elif len(tmp) == 2:
+                host = tmp[1], tmp[0]
+            else:
+                raise Exception("illegal use of @ in the root path: %s" % root)
+
+            if arg_rsh is None:
+                raise Exception("--rsh must be given when targeting a remote repository")
+        else:
+            root = os.path.abspath(arg_root)
+
+        return SnapshotRepository.create(root=root, host=host, rsh=arg_rsh, rsh_yarsnap=arg_rsh_yarsnap)
+
+    def repository_from_args_for_service(arg_root):
+        root = os.path.abspath(arg_root)
+
+        return SnapshotRepository.create(root=root, host=None, rsh=None, rsh_yarsnap=None)
 
 
     #

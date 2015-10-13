@@ -30,9 +30,8 @@ from pipes import quote as shell_quote
 
 
 class YarsnapBackuper(object):
-    def __init__(self, repository, rsh, rsync_args):
+    def __init__(self, repository, rsync_args):
         self.repository = repository
-        self.rsh = rsh
         self.rsync_args = rsync_args
 
         dests = self.repository.list_snapshots()
@@ -56,8 +55,8 @@ class YarsnapBackuper(object):
 
     def _issue_rsync(self, params):
         rsync_call = ["rsync"]
-        if self.rsh is not None:
-            rsync_call += ["--rsh", self.rsh]
+        if self.repository.rsh is not None:
+            rsync_call += ["--rsh", self.repository.rsh]
         rsync_call += params
 
         print "issuing: ", rsync_call
@@ -221,14 +220,14 @@ if __name__ == "__main__":
     #
     def BackupAction(args):
         repository = repository_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap)
-        backuper = YarsnapBackuper(repository, args.rsh, args.rsync_args)
+        backuper = YarsnapBackuper(repository, args.rsync_args)
 
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
         repository = repository_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap)
-        backuper = YarsnapBackuper(repository, args.rsh, args.rsync_args)
+        backuper = YarsnapBackuper(repository, args.rsync_args)
 
         dests = [dest.dirname for dest in backuper.dests]
         if len(dests) > 0:

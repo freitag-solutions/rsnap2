@@ -28,7 +28,7 @@ import subprocess
 import sys
 
 
-class RsyncBackuper(object):
+class YarsnapBackuper(object):
     def __init__(self, root, host, rsync_args, rsh):
         self.root = root
         self.host = host
@@ -41,7 +41,7 @@ class RsyncBackuper(object):
         self.dests = dests
 
     def backup(self, sources):
-        dest = RsyncBackuperDest.new(self.root, self.host)
+        dest = YarsnapBackuperDest.new(self.root, self.host)
         previous_backup = None
         if len(self.dests) > 0:
             previous_backup = next((x for x in self.dests if x.is_complete), None)
@@ -96,16 +96,16 @@ class RsyncBackuper(object):
             if rsh is None:
                 raise Exception("--rsh must be given when targeting a remote repository")
 
-            return RsyncBackuper_Remote(remote_root, host, rsync_args, rsh, rsh_yarsnap)
+            return YarsnapBackuper_Remote(remote_root, host, rsync_args, rsh, rsh_yarsnap)
         else:
             root = os.path.abspath(root)
             if not os.path.exists(root) or not os.path.isdir(root):
                 raise ValueError("no such dir: {0}".format(root))
 
-            return RsyncBackuper_Local(root, rsync_args, rsh)
+            return YarsnapBackuper_Local(root, rsync_args, rsh)
 
 
-class RsyncBackuperDest:
+class YarsnapBackuperDest:
     DEST_DIR_FORMAT = "{time}{dotflag}"
     DEST_DIR_DATE_FORMAT = "%Y-%m-%d_%H-%M-%S.%f"
     DEST_DIR_RE = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}.\d{6})(?P<flag>\.partial)?$")
@@ -160,16 +160,16 @@ class RsyncBackuperDest:
         )
 
 
-class RsyncBackuper_Local(RsyncBackuper):
+class YarsnapBackuper_Local(YarsnapBackuper):
     def __init__(self, root, rsync_args, rsh):
-        super(RsyncBackuper_Local, self).__init__(root, None, rsync_args, rsh)
+        super(YarsnapBackuper_Local, self).__init__(root, None, rsync_args, rsh)
 
     def _list_previous_dests(self):
         previous_dests = []
 
         root_subdirs = [child for child in os.listdir(self.root) if os.path.isdir(os.path.join(self.root, child))]
         for root_subdir in root_subdirs:
-            dest = RsyncBackuperDest.parse(root_subdir, self.root, self.host)
+            dest = YarsnapBackuperDest.parse(root_subdir, self.root, self.host)
 
             if dest is not None:
                 previous_dests.append(dest)
@@ -191,18 +191,18 @@ class RsyncBackuper_Local(RsyncBackuper):
         os.rename(path_old, path_new)
 
 
-class RsyncBackuper_Remote(RsyncBackuper):
+class YarsnapBackuper_Remote(YarsnapBackuper):
     def __init__(self, root, host, rsync_args, rsh, rsh_yarsnap):
         self.yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
 
-        super(RsyncBackuper_Remote, self).__init__(root, host, rsync_args, rsh)
+        super(YarsnapBackuper_Remote, self).__init__(root, host, rsync_args, rsh)
 
     def _list_previous_dests(self):
         info_str = self._remote_yarsnap(["info", self.root])
 
         previous_dests = []
         for info_line in info_str.splitlines():
-            previous_dests.append(RsyncBackuperDest.parse(info_line, self.root, self.host))
+            previous_dests.append(YarsnapBackuperDest.parse(info_line, self.root, self.host))
 
         return previous_dests
 
@@ -237,12 +237,12 @@ if __name__ == "__main__":
         if True in (arg.startswith("--link-dest") for arg in args.rsync_args):
             raise ValueError("--link-dest cannot be overwritten in --rsync-args")
 
-        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
+        backuper = YarsnapBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
-        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
+        backuper = YarsnapBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
 
         dests = [dest.dirname for dest in backuper.dests]
         if len(dests) > 0:
@@ -250,9 +250,9 @@ if __name__ == "__main__":
         return 0
 
     def ServiceAction_MarkCompleted(args):
-        backuper = RsyncBackuper.create(args.root, None, None, None)
+        backuper = YarsnapBackuper.create(args.root, None, None, None)
 
-        dest = RsyncBackuperDest.parse(args.dest, backuper.root, backuper.host)
+        dest = YarsnapBackuperDest.parse(args.dest, backuper.root, backuper.host)
         if dest is None:
             return 1
         backuper._complete_dest(dest)

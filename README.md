@@ -1,1 +1,1 @@
-# Yet Another Rsync SNAPshot utility
+# Yet Another Rsync SNAPshot utility (yarsnap)

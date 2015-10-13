@@ -21,6 +21,7 @@ import argparse
 import datetime
 import operator
 import os
+from pipes import quote as shell_quote
 import re
 import shlex
 import subprocess
@@ -28,10 +29,11 @@ import sys
 
 
 class RsyncBackuper(object):
-    def __init__(self, root, host, rsync_args):
+    def __init__(self, root, host, rsync_args, rsh):
         self.root = root
         self.host = host
         self.rsync_args = rsync_args
+        self.rsh = rsh
 
         dests = self._list_previous_dests()
         dests.sort(key=operator.attrgetter("time"), reverse=True)
@@ -54,7 +56,17 @@ class RsyncBackuper(object):
         self._complete_dest(dest)
 
     def _issue_rsync(self, params):
-        raise NotImplementedError()
+        rsync_call = ["rsync"]
+        if self.rsh is not None:
+            rsync_call += ["--rsh", self.rsh]
+        rsync_call += params
+
+        print "issuing: ", rsync_call
+        print "---"
+        try:
+            subprocess.check_call(rsync_call)
+        except subprocess.CalledProcessError, e:
+            raise e
 
     def _list_previous_dests(self):
         raise NotImplementedError()
@@ -84,13 +96,13 @@ class RsyncBackuper(object):
             if rsh is None:
                 raise Exception("--rsh must be given when targeting a remote repository")
 
-            return RsyncBackuper_Remote(remote_root, host, rsh, rsh_yarsnap, rsync_args)
+            return RsyncBackuper_Remote(remote_root, host, rsync_args, rsh, rsh_yarsnap)
         else:
             root = os.path.abspath(root)
             if not os.path.exists(root) or not os.path.isdir(root):
                 raise ValueError("no such dir: {0}".format(root))
 
-            return RsyncBackuper_Local(root, rsync_args)
+            return RsyncBackuper_Local(root, rsync_args, rsh)
 
 
 class RsyncBackuperDest:
@@ -149,18 +161,8 @@ class RsyncBackuperDest:
 
 
 class RsyncBackuper_Local(RsyncBackuper):
-    def __init__(self, root, rsync_args):
-        super(RsyncBackuper_Local, self).__init__(root, None, rsync_args)
-
-    def _issue_rsync(self, params):
-        rsync_call = ["rsync"] + params
-
-        print "issuing: ", rsync_call
-        print "---"
-        try:
-            subprocess.check_call(rsync_call)
-        except subprocess.CalledProcessError, e:
-            raise e
+    def __init__(self, root, rsync_args, rsh):
+        super(RsyncBackuper_Local, self).__init__(root, None, rsync_args, rsh)
 
     def _list_previous_dests(self):
         previous_dests = []
@@ -190,31 +192,13 @@ class RsyncBackuper_Local(RsyncBackuper):
 
 
 class RsyncBackuper_Remote(RsyncBackuper):
-    def __init__(self, root, host, rsh, rsh_yarsnap, rsync_args):
+    def __init__(self, root, host, rsync_args, rsh, rsh_yarsnap):
         self.yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
 
-        self.rsh_orig = rsh
-        rsh = shlex.split(rsh)
-        if host[1] is not None:
-            rsh += ["%s@%s" % (host[1], host[0])]
-        else:
-            rsh += [host[0]]
-        self.rsh = rsh
-
-        super(RsyncBackuper_Remote, self).__init__(root, host, rsync_args)
-
-    def _issue_rsync(self, params):
-        rsync_call = ["rsync"] + ["--rsh", self.rsh_orig] + params
-
-        print "issuing: ", rsync_call
-        print "---"
-        try:
-            subprocess.check_call(rsync_call)
-        except subprocess.CalledProcessError, e:
-            raise e
+        super(RsyncBackuper_Remote, self).__init__(root, host, rsync_args, rsh)
 
     def _list_previous_dests(self):
-        info_str = self._run_remotely([self.yarsnap, "info", self.root])
+        info_str = self._remote_yarsnap(["info", self.root])
 
         previous_dests = []
         for info_line in info_str.splitlines():
@@ -225,11 +209,16 @@ class RsyncBackuper_Remote(RsyncBackuper):
     def _complete_dest(self, dest):
         assert dest.root == self.root and dest.host == self.host
 
-        self._run_remotely([self.yarsnap, "__service", self.root, "mark-completed", dest.dirname])
+        self._remote_yarsnap(["__service", self.root, "mark-completed", dest.dirname])
 
-    def _run_remotely(self, cmd):
-        from pipes import quote as shell_quote
-        cmd_call = self.rsh + [" ".join([shell_quote(c) for c in cmd])]
+    def _remote_yarsnap(self, cmd):
+        cmd_call = shlex.split(self.rsh)
+        if self.host[1] is not None:
+            cmd_call += ["%s@%s" % (self.host[1], self.host[0])]
+        else:
+            cmd_call += [self.host[0]]
+        cmd_call += [self.yarsnap]
+        cmd_call += [" ".join([shell_quote(c) for c in cmd])]
 
         print "ISSUING REMOTE: ", cmd_call
         print "---"

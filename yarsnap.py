@@ -26,44 +26,52 @@ import shlex
 import subprocess
 import sys
 
+from pipes import quote as shell_quote
 
-class RsyncBackuper(object):
-    def __init__(self, root, host, rsync_args):
-        self.root = root
-        self.host = host
+
+class YarsnapBackuper(object):
+    def __init__(self, root, host, rsh, rsh_yarsnap, rsync_args):
+        self.rsh = rsh
         self.rsync_args = rsync_args
+        self.repository = SnapshotRepository.create(root, host, rsh, rsh_yarsnap)
 
-        dests = self._list_previous_dests()
+        dests = self.repository.list_snapshots()
         dests.sort(key=operator.attrgetter("time"), reverse=True)
 
         self.dests = dests
+        self.rsync_args = rsync_args
 
     def backup(self, sources):
-        dest = RsyncBackuperDest.new(self.root, self.host)
+        dest = Snapshot.new(self.repository)
         previous_backup = None
         if len(self.dests) > 0:
             previous_backup = next((x for x in self.dests if x.is_complete), None)
 
         rsync_params = sources + [dest.hostPath]
-        rsync_params += self.rsync_args
         if previous_backup is not None:
             rsync_params += ["--link-dest", previous_backup.path]
+        rsync_params += self.rsync_args
 
         self._issue_rsync(rsync_params)
 
-        self._complete_dest(dest)
+        self.repository.complete_dest(dest)
 
     def _issue_rsync(self, params):
-        raise NotImplementedError()
+        rsync_call = ["rsync"]
+        if self.rsh is not None:
+            rsync_call += ["--rsh", self.rsh]
+        rsync_call += params
 
-    def _list_previous_dests(self):
-        raise NotImplementedError()
-
-    def _complete_dest(self, dest):
-        raise NotImplementedError()
+        print "issuing: ", rsync_call
+        print "---"
+        try:
+            subprocess.check_call(rsync_call)
+        except subprocess.CalledProcessError, e:
+            raise e
 
     @classmethod
-    def create(cls, root, rsync_args, rsh, rsh_yarsnap):
+    def from_args(cls, root, rsh, rsh_yarsnap, rsync_args):
+        host = None
         if ":" in root:
             # username@remote_host:path
             tmp = root.split(":")
@@ -71,7 +79,7 @@ class RsyncBackuper(object):
                 raise Exception("illegal use of : in the root path: %s" % root)
 
             remote_host_string = tmp[0]
-            remote_root = tmp[1]
+            root = tmp[1]
 
             tmp = remote_host_string.split("@")
             if len(tmp) == 1:
@@ -83,99 +91,52 @@ class RsyncBackuper(object):
 
             if rsh is None:
                 raise Exception("--rsh must be given when targeting a remote repository")
-
-            return RsyncBackuper_Remote(remote_root, host, rsh, rsh_yarsnap, rsync_args)
         else:
             root = os.path.abspath(root)
-            if not os.path.exists(root) or not os.path.isdir(root):
-                raise ValueError("no such dir: {0}".format(root))
 
-            return RsyncBackuper_Local(root, rsync_args)
+        return cls(root=root, host=host, rsh=rsh, rsh_yarsnap=rsh_yarsnap, rsync_args=rsync_args)
 
 
-class RsyncBackuperDest:
-    DEST_DIR_FORMAT = "{time}{dotflag}"
-    DEST_DIR_DATE_FORMAT = "%Y-%m-%d_%H-%M-%S.%f"
-    DEST_DIR_RE = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}.\d{6})(?P<flag>\.partial)?$")
-
-    def __init__(self, dirname, root, host, time, is_complete):
-        self.dirname = dirname
+class SnapshotRepository(object):
+    def __init__(self, root, host, rsh, rsh_yarsnap):
         self.root = root
         self.host = host
-        self.time = time
-        self.is_complete = is_complete
+        self.rsh = rsh
+        self.rsh_yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
 
-    @property
-    def path(self):
-        return os.path.join(self.root, self.dirname)
+    def list_snapshots(self):
+        raise NotImplementedError()
 
-    @property
-    def hostPath(self):
-        if self.host is None:
-            return self.path
+    def complete_dest(self, dest):
+        raise NotImplementedError()
+
+    @classmethod
+    def create(cls, root, host, rsh, rsh_yarsnap):
+        if host is None:
+            return LocalSnapshotRepository(root=root, host=host, rsh=rsh, rsh_yarsnap=rsh_yarsnap)
         else:
-            if self.host[1] is not None:
-                host = "%s@%s" % (self.host[1], self.host[0])
-            else:
-                host = self.host[0]
-            return os.path.join("{}:{}".format(host, self.root), self.dirname)
-
-    @classmethod
-    def parse(cls, dirname, root, host):
-        match = cls.DEST_DIR_RE.match(dirname)
-        if match is None:
-            return None
-
-        time = datetime.datetime.strptime(match.group("time"), cls.DEST_DIR_DATE_FORMAT)
-
-        flag = match.group("flag")
-        is_complete = flag is None
-
-        return cls(dirname=dirname, root=root, host=host, time=time, is_complete=is_complete)
-
-    @classmethod
-    def new(cls, root, host):
-        time = datetime.datetime.now()
-        dirname = cls._get_dirname(time, "partial")
-
-        return cls(dirname=dirname, root=root, host=host, time=time, is_complete=False)
-
-    @classmethod
-    def _get_dirname(cls, time, flag=None):
-        return cls.DEST_DIR_FORMAT.format(
-            time=time.strftime(cls.DEST_DIR_DATE_FORMAT),
-            dotflag="" if flag is None else ".{}".format(flag)
-        )
+            return RemoteSnapshotRepository(root=root, host=host, rsh=rsh, rsh_yarsnap=rsh_yarsnap)
 
 
-class RsyncBackuper_Local(RsyncBackuper):
-    def __init__(self, root, rsync_args):
-        super(RsyncBackuper_Local, self).__init__(root, None, rsync_args)
+class LocalSnapshotRepository(SnapshotRepository):
+    def __init__(self, root, host, rsh, rsh_yarsnap):
+        assert os.path.isabs(root)
+        super(LocalSnapshotRepository, self).__init__(root, host, rsh, rsh_yarsnap)
 
-    def _issue_rsync(self, params):
-        rsync_call = ["rsync"] + params
-
-        print "issuing: ", rsync_call
-        print "---"
-        try:
-            subprocess.check_call(rsync_call)
-        except subprocess.CalledProcessError, e:
-            raise e
-
-    def _list_previous_dests(self):
+    def list_snapshots(self):
         previous_dests = []
 
         root_subdirs = [child for child in os.listdir(self.root) if os.path.isdir(os.path.join(self.root, child))]
         for root_subdir in root_subdirs:
-            dest = RsyncBackuperDest.parse(root_subdir, self.root, self.host)
+            dest = Snapshot.existing(root_subdir, self)
 
             if dest is not None:
                 previous_dests.append(dest)
 
         return previous_dests
 
-    def _complete_dest(self, dest):
-        assert dest.root == self.root and dest.host == self.host
+    def complete_dest(self, dest):
+        assert dest.repository == self
 
         if not(os.path.exists(dest.path) and os.path.isdir(dest.path)):
             raise Exception("destination doesn't exist! maybe check your rsync arguments?")
@@ -189,47 +150,33 @@ class RsyncBackuper_Local(RsyncBackuper):
         os.rename(path_old, path_new)
 
 
-class RsyncBackuper_Remote(RsyncBackuper):
-    def __init__(self, root, host, rsh, rsh_yarsnap, rsync_args):
-        self.yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
+class RemoteSnapshotRepository(SnapshotRepository):
+    def __init__(self, root, host, rsh, rsh_yarsnap):
+        assert rsh is not None
+        super(RemoteSnapshotRepository, self).__init__(root, host, rsh, rsh_yarsnap)
 
-        self.rsh_orig = rsh
-        rsh = shlex.split(rsh)
-        if host[1] is not None:
-            rsh += ["%s@%s" % (host[1], host[0])]
-        else:
-            rsh += [host[0]]
-        self.rsh = rsh
-
-        super(RsyncBackuper_Remote, self).__init__(root, host, rsync_args)
-
-    def _issue_rsync(self, params):
-        rsync_call = ["rsync"] + ["--rsh", self.rsh_orig] + params
-
-        print "issuing: ", rsync_call
-        print "---"
-        try:
-            subprocess.check_call(rsync_call)
-        except subprocess.CalledProcessError, e:
-            raise e
-
-    def _list_previous_dests(self):
-        info_str = self._run_remotely([self.yarsnap, "info", self.root])
+    def list_snapshots(self):
+        info_str = self._remote_yarsnap(["info", self.root])
 
         previous_dests = []
         for info_line in info_str.splitlines():
-            previous_dests.append(RsyncBackuperDest.parse(info_line, self.root, self.host))
+            previous_dests.append(Snapshot.existing(info_line, self))
 
         return previous_dests
 
-    def _complete_dest(self, dest):
-        assert dest.root == self.root and dest.host == self.host
+    def complete_dest(self, dest):
+        assert dest.repository == self
 
-        self._run_remotely([self.yarsnap, "__service", self.root, "mark-completed", dest.dirname])
+        self._remote_yarsnap(["__service", self.root, "mark-completed", dest.dirname])
 
-    def _run_remotely(self, cmd):
-        from pipes import quote as shell_quote
-        cmd_call = self.rsh + [" ".join([shell_quote(c) for c in cmd])]
+    def _remote_yarsnap(self, cmd):
+        cmd_call = shlex.split(self.rsh)
+        if self.host[1] is not None:
+            cmd_call += ["%s@%s" % (self.host[1], self.host[0])]
+        else:
+            cmd_call += [self.host[0]]
+        cmd_call += [self.rsh_yarsnap]
+        cmd_call += [" ".join([shell_quote(c) for c in cmd])]
 
         print "ISSUING REMOTE: ", cmd_call
         print "---"
@@ -240,20 +187,73 @@ class RsyncBackuper_Remote(RsyncBackuper):
             raise e  # TODO: how to prevent check_output from forwarding stdout/stderr on error? use Popen?
 
 
+class Snapshot(object):
+    DEST_DIR_FORMAT = "{time}{dotflag}"
+    DEST_DIR_DATE_FORMAT = "%Y-%m-%d_%H-%M-%S.%f"
+    DEST_DIR_RE = re.compile(r"^(?P<time>\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}.\d{6})(?P<flag>\.partial)?$")
+
+    def __init__(self, repository, dirname, time, is_complete):
+        assert repository is not None
+
+        self.repository = repository
+        self.dirname = dirname
+        self.time = time
+        self.is_complete = is_complete
+
+    @property
+    def path(self):
+        return os.path.join(self.repository.root, self.dirname)
+
+    @property
+    def hostPath(self):
+        if self.repository.host is None:
+            return self.path
+        else:
+            if self.repository.host[1] is not None:
+                host = "%s@%s" % (self.repository.host[1], self.repository.host[0])
+            else:
+                host = self.repository.host[0]
+            return os.path.join("{}:{}".format(host, self.repository.root), self.dirname)
+
+    @classmethod
+    def new(cls, repository):
+        time = datetime.datetime.now()
+        dirname = cls._get_dirname(time, "partial")
+
+        return cls(repository=repository, dirname=dirname, time=time, is_complete=False)
+
+    @classmethod
+    def existing(cls, dirname, repository):
+        match = cls.DEST_DIR_RE.match(dirname)
+        if match is None:
+            return None
+
+        time = datetime.datetime.strptime(match.group("time"), cls.DEST_DIR_DATE_FORMAT)
+
+        flag = match.group("flag")
+        is_complete = flag is None
+
+        return cls(repository=repository, dirname=dirname, time=time, is_complete=is_complete)
+
+    @classmethod
+    def _get_dirname(cls, time, flag=None):
+        return cls.DEST_DIR_FORMAT.format(
+            time=time.strftime(cls.DEST_DIR_DATE_FORMAT),
+            dotflag="" if flag is None else ".{}".format(flag)
+        )
+
+
 if __name__ == "__main__":
     #
     # action definitions
     #
     def BackupAction(args):
-        if True in (arg.startswith("--link-dest") for arg in args.rsync_args):
-            raise ValueError("--link-dest cannot be overwritten in --rsync-args")
-
-        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
+        backuper = YarsnapBackuper.from_args(root=args.root, rsh=args.rsh, rsh_yarsnap=args.rsh_yarsnap, rsync_args=args.rsync_args)
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
-        backuper = RsyncBackuper.create(args.root, args.rsync_args, args.rsh, args.rsh_yarsnap)
+        backuper = YarsnapBackuper.from_args(root=args.root, rsh=args.rsh, rsh_yarsnap=args.rsh_yarsnap, rsync_args=args.rsync_args)
 
         dests = [dest.dirname for dest in backuper.dests]
         if len(dests) > 0:
@@ -261,12 +261,12 @@ if __name__ == "__main__":
         return 0
 
     def ServiceAction_MarkCompleted(args):
-        backuper = RsyncBackuper.create(args.root, None, None, None)
+        backuper = YarsnapBackuper.from_args(root=args.root, rsh=None, rsh_yarsnap=None, rsync_args=None)
 
-        dest = RsyncBackuperDest.parse(args.dest, backuper.root, backuper.host)
+        dest = Snapshot.existing(args.dest, backuper.repository)
         if dest is None:
             return 1
-        backuper._complete_dest(dest)
+        backuper.repository.complete_dest(dest)
 
 
     #

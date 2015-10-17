@@ -19,6 +19,7 @@
 
 import argparse
 import datetime
+import logging
 import operator
 import os
 import re
@@ -145,6 +146,8 @@ class RemoteSnapshotRepository(SnapshotRepository):
             cmd_call += [self.host[0]]
         cmd_call += [self.rsh_yarsnap]
         cmd_call += [" ".join([shell_quote(c) for c in cmd])]
+        if "args" in globals() and hasattr(globals()["args"], "verbosity") and globals()["args"].verbosity > 0:
+            cmd_call += ["-"+"v"*globals()["args"].verbosity]
 
         print "ISSUING REMOTE: ", cmd_call
         print "---"
@@ -243,7 +246,11 @@ if __name__ == "__main__":
     # command line parser definitions
     #
     args_parser = argparse.ArgumentParser(description="rsync snapshot backups")
+
     actions_parsers = args_parser.add_subparsers()
+
+    actions_parent = argparse.ArgumentParser(add_help=False)
+    actions_parent.add_argument("-v", "--verbosity", action="count", default=0)
 
     # user actions
     actions_useraction_parent = argparse.ArgumentParser(add_help=False)
@@ -251,17 +258,17 @@ if __name__ == "__main__":
     actions_useraction_parent.add_argument("--rsh-yarsnap")
     actions_useraction_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
 
-    action_backup = actions_parsers.add_parser("backup", parents=[actions_useraction_parent])
+    action_backup = actions_parsers.add_parser("backup", parents=[actions_parent, actions_useraction_parent])
     action_backup.add_argument("sources", nargs="+")
     action_backup.add_argument("root")
     action_backup.set_defaults(handler=BackupAction)
 
-    action_info = actions_parsers.add_parser("info", parents=[actions_useraction_parent])
+    action_info = actions_parsers.add_parser("info", parents=[actions_parent, actions_useraction_parent])
     action_info.add_argument("root")
     action_info.set_defaults(handler=InfoAction)
 
     # internal actions
-    action_service = actions_parsers.add_parser("__service")
+    action_service = actions_parsers.add_parser("__service", parents=[actions_parent])
     action_service.add_argument("root")
     action_service_subparsers = action_service.add_subparsers()
     action_service_markcompleted = action_service_subparsers.add_parser("mark-completed")
@@ -313,4 +320,23 @@ if __name__ == "__main__":
     # program execution
     #
     args = args_parser.parse_args()
+
+    # set up logging
+    def test():
+        cmd_call = []
+        if "args" in globals() and hasattr(globals()["args"], "verbosity") and globals()["args"].verbosity > 0:
+            cmd_call += ["-"+"v"*globals()["args"].verbosity]
+        print cmd_call
+
+    if args.verbosity > 2:
+        args_parser.error("--verbosity cannot not exceed 2")
+
+    log_level = {
+        0: logging.WARNING,
+        1: logging.INFO,
+        2: logging.DEBUG
+    }[args.verbosity]
+    logging.basicConfig(level=log_level)
+
+    # delegate to action handler
     exit(args.handler(args))

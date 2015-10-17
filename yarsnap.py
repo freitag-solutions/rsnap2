@@ -39,6 +39,8 @@ class YarsnapBackuper(object):
         dests.sort(key=operator.attrgetter("time"), reverse=True)
         self.dests = dests
 
+        self.logger = logging.getLogger(self.__class__.__name__)
+
     def backup(self, sources):
         dest = Snapshot.new(self.repository)
         previous_backup = None
@@ -57,12 +59,14 @@ class YarsnapBackuper(object):
     def _issue_rsync(self, params):
         rsync_call = ["rsync"] + params
 
-        print "issuing: ", rsync_call
-        print "---"
-        try:
-            subprocess.check_call(rsync_call)
-        except subprocess.CalledProcessError, e:
-            raise e
+        self.logger.info("issuing rsync: %s\n", " ".join([shell_quote(s) for s in rsync_call]))
+
+        print >>sys.stderr, ""
+        ret = subprocess.call(rsync_call, stdout=sys.stderr, stderr=sys.stderr)
+        print >>sys.stderr, ""
+
+        if ret != 0:
+            raise Exception("rsync failed")
 
 
 class SnapshotRepository(object):
@@ -71,6 +75,8 @@ class SnapshotRepository(object):
         self.host = host
         self.rsh = rsh
         self.rsh_yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
+
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def list_snapshots(self):
         raise NotImplementedError()
@@ -139,6 +145,9 @@ class RemoteSnapshotRepository(SnapshotRepository):
         self._remote_yarsnap(["__service", self.root, "mark-completed", dest.dirname])
 
     def _remote_yarsnap(self, cmd):
+        if "args" in globals() and hasattr(globals()["args"], "verbosity") and globals()["args"].verbosity > 0:
+            cmd += ["-"+"v"*globals()["args"].verbosity]
+
         cmd_call = shlex.split(self.rsh)
         if self.host[1] is not None:
             cmd_call += ["%s@%s" % (self.host[1], self.host[0])]
@@ -146,16 +155,12 @@ class RemoteSnapshotRepository(SnapshotRepository):
             cmd_call += [self.host[0]]
         cmd_call += [self.rsh_yarsnap]
         cmd_call += [" ".join([shell_quote(c) for c in cmd])]
-        if "args" in globals() and hasattr(globals()["args"], "verbosity") and globals()["args"].verbosity > 0:
-            cmd_call += ["-"+"v"*globals()["args"].verbosity]
 
-        print "ISSUING REMOTE: ", cmd_call
-        print "---"
+        self.logger.info("issuing remote: %s\n", " ".join([shell_quote(c) for c in cmd_call]))
         try:
-            return subprocess.check_output(cmd_call)
+            return subprocess.check_output(cmd_call, stderr=sys.stderr)
         except subprocess.CalledProcessError, e:
-            print >>sys.stderr, "REMOTE ERROR"
-            raise e  # TODO: how to prevent check_output from forwarding stdout/stderr on error? use Popen?
+            raise e
 
 
 class Snapshot(object):
@@ -170,6 +175,8 @@ class Snapshot(object):
         self.dirname = dirname
         self.time = time
         self.is_complete = is_complete
+
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     @property
     def path(self):
@@ -268,10 +275,11 @@ if __name__ == "__main__":
     action_info.set_defaults(handler=InfoAction)
 
     # internal actions
-    action_service = actions_parsers.add_parser("__service", parents=[actions_parent])
+    action_service = actions_parsers.add_parser("__service")
     action_service.add_argument("root")
+
     action_service_subparsers = action_service.add_subparsers()
-    action_service_markcompleted = action_service_subparsers.add_parser("mark-completed")
+    action_service_markcompleted = action_service_subparsers.add_parser("mark-completed", parents=[actions_parent])
     action_service_markcompleted.add_argument("dest")
     action_service_markcompleted.set_defaults(handler=ServiceAction_MarkCompleted)
 
@@ -322,12 +330,6 @@ if __name__ == "__main__":
     args = args_parser.parse_args()
 
     # set up logging
-    def test():
-        cmd_call = []
-        if "args" in globals() and hasattr(globals()["args"], "verbosity") and globals()["args"].verbosity > 0:
-            cmd_call += ["-"+"v"*globals()["args"].verbosity]
-        print cmd_call
-
     if args.verbosity > 2:
         args_parser.error("--verbosity cannot not exceed 2")
 

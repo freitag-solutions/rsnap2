@@ -54,10 +54,7 @@ class YarsnapBackuper(object):
         self.repository.complete_dest(dest)
 
     def _issue_rsync(self, params):
-        rsync_call = ["rsync"]
-        if self.repository.rsh is not None:
-            rsync_call += ["--rsh", self.repository.rsh]
-        rsync_call += params
+        rsync_call = ["rsync"] + params
 
         print "issuing: ", rsync_call
         print "---"
@@ -219,15 +216,13 @@ if __name__ == "__main__":
     # action definitions
     #
     def BackupAction(args):
-        repository = repository_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap)
-        backuper = YarsnapBackuper(repository, args.rsync_args)
+        backuper = backuper_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap, arg_rsync_args=args.rsync_args)
 
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
-        repository = repository_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap)
-        backuper = YarsnapBackuper(repository, args.rsync_args)
+        backuper = backuper_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap, arg_rsync_args=args.rsync_args)
 
         dests = [dest.dirname for dest in backuper.dests]
         if len(dests) > 0:
@@ -236,7 +231,6 @@ if __name__ == "__main__":
 
     def ServiceAction_MarkCompleted(args):
         repository = repository_from_args_for_service(arg_root=args.root)
-        assert repository.host is None
 
         dest = Snapshot.existing(args.dest, repository)
         if dest is None:
@@ -278,7 +272,12 @@ if __name__ == "__main__":
     #
     # helpers
     #
-    def repository_from_args(arg_root, arg_rsh=None, arg_rsh_yarsnap=None):
+    def backuper_from_args(arg_root, arg_rsh, arg_rsh_yarsnap, arg_rsync_args):
+        repository = repository_from_args(arg_root=arg_root, arg_rsh=arg_rsh, arg_rsh_yarsnap=arg_rsh_yarsnap)
+
+        return YarsnapBackuper(repository, arg_rsync_args + (["--rsh", arg_rsh] if arg_rsh is not None else []))
+
+    def repository_from_args(arg_root, arg_rsh, arg_rsh_yarsnap):
         host = None
         if ":" in arg_root:
             # username@remote_host:path

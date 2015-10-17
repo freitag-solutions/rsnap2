@@ -19,6 +19,7 @@
 
 import argparse
 import datetime
+import logging
 import operator
 import os
 import re
@@ -38,6 +39,8 @@ class YarsnapBackuper(object):
         dests.sort(key=operator.attrgetter("time"), reverse=True)
         self.dests = dests
 
+        self.logger = logging.getLogger(self.__class__.__name__)
+
     def backup(self, sources):
         dest = Snapshot.new(self.repository)
         previous_backup = None
@@ -56,12 +59,14 @@ class YarsnapBackuper(object):
     def _issue_rsync(self, params):
         rsync_call = ["rsync"] + params
 
-        print "issuing: ", rsync_call
-        print "---"
-        try:
-            subprocess.check_call(rsync_call)
-        except subprocess.CalledProcessError, e:
-            raise e
+        self.logger.info("issuing rsync: %s", " ".join([shell_quote(s) for s in rsync_call]))
+
+        print >>sys.stderr, ""
+        ret = subprocess.call(rsync_call, stdout=sys.stderr, stderr=sys.stderr)
+        print >>sys.stderr, ""
+
+        if ret != 0:
+            raise Exception("rsync failed")
 
 
 class SnapshotRepository(object):
@@ -70,6 +75,8 @@ class SnapshotRepository(object):
         self.host = host
         self.rsh = rsh
         self.rsh_yarsnap = "yarsnap" if rsh_yarsnap is None else rsh_yarsnap
+
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def list_snapshots(self):
         raise NotImplementedError()
@@ -138,6 +145,9 @@ class RemoteSnapshotRepository(SnapshotRepository):
         self._remote_yarsnap(["__service", self.root, "mark-completed", dest.dirname])
 
     def _remote_yarsnap(self, cmd):
+        if "args" in globals() and hasattr(globals()["args"], "verbosity") and globals()["args"].verbosity > 0:
+            cmd += ["-"+"v"*globals()["args"].verbosity]
+
         cmd_call = shlex.split(self.rsh)
         if self.host[1] is not None:
             cmd_call += ["%s@%s" % (self.host[1], self.host[0])]
@@ -146,13 +156,11 @@ class RemoteSnapshotRepository(SnapshotRepository):
         cmd_call += [self.rsh_yarsnap]
         cmd_call += [" ".join([shell_quote(c) for c in cmd])]
 
-        print "ISSUING REMOTE: ", cmd_call
-        print "---"
+        self.logger.info("issuing remote yarsnap: %s", " ".join([shell_quote(c) for c in cmd_call]))
         try:
-            return subprocess.check_output(cmd_call)
+            return subprocess.check_output(cmd_call, stderr=sys.stderr)
         except subprocess.CalledProcessError, e:
-            print >>sys.stderr, "REMOTE ERROR"
-            raise e  # TODO: how to prevent check_output from forwarding stdout/stderr on error? use Popen?
+            raise e
 
 
 class Snapshot(object):
@@ -167,6 +175,8 @@ class Snapshot(object):
         self.dirname = dirname
         self.time = time
         self.is_complete = is_complete
+
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     @property
     def path(self):
@@ -216,12 +226,14 @@ if __name__ == "__main__":
     # action definitions
     #
     def BackupAction(args):
+        logging.debug("handling: BackupAction")
         backuper = backuper_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap, arg_rsync_args=args.rsync_args)
 
         backuper.backup(args.sources)
         return 0
 
     def InfoAction(args):
+        logging.debug("handling: InfoAction")
         backuper = backuper_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap, arg_rsync_args=args.rsync_args)
 
         dests = [dest.dirname for dest in backuper.dests]
@@ -230,6 +242,7 @@ if __name__ == "__main__":
         return 0
 
     def ServiceAction_MarkCompleted(args):
+        logging.debug("handling: ServiceAction_MarkCompleted")
         repository = repository_from_args_for_service(arg_root=args.root)
 
         dest = Snapshot.existing(args.dest, repository)
@@ -243,7 +256,11 @@ if __name__ == "__main__":
     # command line parser definitions
     #
     args_parser = argparse.ArgumentParser(description="rsync snapshot backups")
-    actions_parsers = args_parser.add_subparsers()
+
+    actions_parsers = args_parser.add_subparsers(dest="action")
+
+    actions_parent = argparse.ArgumentParser(add_help=False)
+    actions_parent.add_argument("-v", "--verbosity", action="count", default=0)
 
     # user actions
     actions_useraction_parent = argparse.ArgumentParser(add_help=False)
@@ -251,20 +268,21 @@ if __name__ == "__main__":
     actions_useraction_parent.add_argument("--rsh-yarsnap")
     actions_useraction_parent.add_argument("--rsync-args", nargs=argparse.REMAINDER, default=["-a", "-v"])
 
-    action_backup = actions_parsers.add_parser("backup", parents=[actions_useraction_parent])
+    action_backup = actions_parsers.add_parser("backup", parents=[actions_parent, actions_useraction_parent])
     action_backup.add_argument("sources", nargs="+")
     action_backup.add_argument("root")
     action_backup.set_defaults(handler=BackupAction)
 
-    action_info = actions_parsers.add_parser("info", parents=[actions_useraction_parent])
+    action_info = actions_parsers.add_parser("info", parents=[actions_parent, actions_useraction_parent])
     action_info.add_argument("root")
     action_info.set_defaults(handler=InfoAction)
 
-    # internal actions
+    # service actions
     action_service = actions_parsers.add_parser("__service")
     action_service.add_argument("root")
+
     action_service_subparsers = action_service.add_subparsers()
-    action_service_markcompleted = action_service_subparsers.add_parser("mark-completed")
+    action_service_markcompleted = action_service_subparsers.add_parser("mark-completed", parents=[actions_parent])
     action_service_markcompleted.add_argument("dest")
     action_service_markcompleted.set_defaults(handler=ServiceAction_MarkCompleted)
 
@@ -313,4 +331,27 @@ if __name__ == "__main__":
     # program execution
     #
     args = args_parser.parse_args()
-    exit(args.handler(args))
+
+    # set up logging
+    if args.verbosity > 2:
+        args_parser.error("--verbosity cannot not exceed 2")
+
+    log_level = {
+        0: logging.WARNING,
+        1: logging.INFO,
+        2: logging.DEBUG
+    }[args.verbosity]
+
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    if args.action == "__service":
+        log_format = "%(asctime)s - __service:%(name)s - %(levelname)s - %(message)s"
+
+    logging.basicConfig(level=log_level, format=log_format)
+
+    # delegate to action handler
+    try:
+        ret = args.handler(args)
+    except:
+        logging.exception("exception, run with -vv for more info")
+        ret = -1
+    exit(ret)

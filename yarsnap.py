@@ -131,10 +131,11 @@ class RemoteSnapshotRepository(SnapshotRepository):
         super(RemoteSnapshotRepository, self).__init__(root, host, rsh, rsh_yarsnap)
 
     def list_snapshots(self):
-        info_str = self._remote_yarsnap(["info", self.root])
+        remote_snapshots_list = self._remote_yarsnap(["__service", self.root, "list-snapshots"])
+        remote_snapshots_dirnames = remote_snapshots_list.splitlines()
 
         previous_dests = []
-        for info_line in info_str.splitlines():
+        for info_line in remote_snapshots_dirnames:
             previous_dests.append(Snapshot.existing(info_line, self))
 
         return previous_dests
@@ -150,7 +151,7 @@ class RemoteSnapshotRepository(SnapshotRepository):
 
         cmd_call = shlex.split(self.rsh)
         if self.host[1] is not None:
-            cmd_call += ["%s@%s" % (self.host[1], self.host[0])]
+            cmd_call += ["{1}@{0}".format(*self.host)]
         else:
             cmd_call += [self.host[0]]
         cmd_call += [self.rsh_yarsnap]
@@ -188,7 +189,7 @@ class Snapshot(object):
             return self.path
         else:
             if self.repository.host[1] is not None:
-                host = "%s@%s" % (self.repository.host[1], self.repository.host[0])
+                host = "{1}@{0}".format(*self.repository.host)
             else:
                 host = self.repository.host[0]
             return os.path.join("{}:{}".format(host, self.repository.root), self.dirname)
@@ -236,7 +237,18 @@ if __name__ == "__main__":
         logging.debug("handling: InfoAction")
         backuper = backuper_from_args(arg_root=args.root, arg_rsh=args.rsh, arg_rsh_yarsnap=args.rsh_yarsnap, arg_rsync_args=args.rsync_args)
 
-        dests = [dest.dirname for dest in backuper.dests]
+        print "Repository: {}".format(backuper.repository.root)
+        print "number of snapshots: {}".format(len(backuper.dests))
+        print "latest snapshot: {}".format(backuper.dests[0].time)
+        print "earliest snapshot: {}".format(backuper.dests[-1].time)
+
+        return 0
+
+    def ServiceAction_ListSnapshots(args):
+        logging.debug("handling: ServiceAction_ListSnapshots")
+        repository = repository_from_args_for_service(arg_root=args.root)
+
+        dests = [dest.dirname for dest in repository.list_snapshots()]
         if len(dests) > 0:
             print "{}".format(os.linesep.join(dests))
         return 0
@@ -282,6 +294,10 @@ if __name__ == "__main__":
     action_service.add_argument("root")
 
     action_service_subparsers = action_service.add_subparsers()
+
+    action_service_listsnapshots = action_service_subparsers.add_parser("list-snapshots", parents=[actions_parent])
+    action_service_listsnapshots.set_defaults(handler=ServiceAction_ListSnapshots)
+
     action_service_markcompleted = action_service_subparsers.add_parser("mark-completed", parents=[actions_parent])
     action_service_markcompleted.add_argument("dest")
     action_service_markcompleted.set_defaults(handler=ServiceAction_MarkCompleted)
@@ -301,7 +317,7 @@ if __name__ == "__main__":
             # username@remote_host:path
             tmp = arg_root.split(":")
             if len(tmp) != 2:
-                raise Exception("illegal use of : in the root path: %s" % arg_root)
+                raise Exception("illegal use of : in the root path: {}".format(arg_root))
 
             remote_host_string = tmp[0]
             root = tmp[1]
@@ -312,7 +328,7 @@ if __name__ == "__main__":
             elif len(tmp) == 2:
                 host = tmp[1], tmp[0]
             else:
-                raise Exception("illegal use of @ in the root path: %s" % root)
+                raise Exception("illegal use of @ in the root path: {}".format(root))
 
             if arg_rsh is None:
                 raise Exception("--rsh must be given when targeting a remote repository")

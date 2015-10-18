@@ -358,9 +358,9 @@ if __name__ == "__main__":
         2: logging.DEBUG
     }[args.verbosity]
 
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    log_format = "%(levelname)s - %(asctime)s:{}\t%(message)s".format(os.linesep)
     if args.action == "__service":
-        log_format = "%(asctime)s - __service:%(name)s - %(levelname)s - %(message)s"
+        log_format = "%(levelname)s (__service) - %(asctime)s:{}\t%(message)s".format(os.linesep)
 
     logging.basicConfig(level=log_level, format=log_format)
 
